@@ -1,0 +1,7 @@
+[
+  {
+    "Error Message": "bademail-not-valid [line 16]",
+    "Timestamp": "2026-02-19T15:10:44.323Z",
+    "Raw Input": "{\"error\":\"bademail-not-valid [line 16]\"}"
+  }
+]
