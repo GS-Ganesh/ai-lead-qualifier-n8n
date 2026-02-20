@@ -1,0 +1,916 @@
+{
+  "name": "AI Lead Qualifier & CRM Updater",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "=qualify-lead",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -1520,
+        816
+      ],
+      "id": "4f0a8ed3-7ddb-471e-9b69-fe5b7a3f33bf",
+      "name": "Webhook",
+      "webhookId": "0382a1a3-0001-41d7-bd86-e06aae9a5346"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\n\n// Clean & normalize all fields\nconst name = (body.name || '').trim() || 'Unknown';\nconst email = (body.email || '').trim().toLowerCase();\nconst message = (body.message || '').trim();\nconst company = (body.company || '').trim() || 'Not provided';\nconst phone = (body.phone || '').trim() || 'Not provided';\nconst city = (body.city || '').trim() || 'Not provided';\nconst business_type = (body.business_type || '').trim() || 'Not provided';\nconst quantity_needed = (body.quantity_needed || '').trim() || 'Not mentioned';\n\n// Validate email format\nconst emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\nif (!emailRegex.test(email)) {\n  throw new Error(`Invalid email format: ${email}`);\n}\n\n// Block spam/personal emails from getting AI scored\nconst blockedDomains = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com'];\nconst emailDomain = email.split('@')[1];\nconst is_personal_email = blockedDomains.includes(emailDomain);\n\nif (!message || message.length < 20) {\n  throw new Error('Message too short to qualify. Minimum 20 characters.');\n}\n\nreturn [{\n  json: {\n    name,\n    email,\n    company,\n    phone,\n    city,\n    business_type,\n    quantity_needed,\n    message,\n    is_personal_email,\n    email_domain: emailDomain,\n    received_at: new Date().toISOString(),\n    source: body.source || 'website_form'\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1296,
+        816
+      ],
+      "id": "861b0d1c-c44d-4947-b247-9f9f5b7b490d",
+      "name": "Validate & Extract Lead Data",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "GPT-4O"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a B2B sales qualification AI for Luxe Scents, a premium perfume brand that sells bulk fragrance solutions to hotels, spas, resorts, airlines, and gift shops across India.\n\nAnalyze the inquiry and return ONLY raw JSON, no markdown.\n\nScoring guide:\n- 8-10: Large hotel/spa chain, clear budget, wants to order soon\n- 5-7: Mid-size business, interested but exploring\n- 1-4: Individual, reseller, vague inquiry, or competitor research\n\nReturn exactly:\n{\n  \"score\": <1-10>,\n  \"intent\": \"<bulk_order|sample_request|pricing_inquiry|partnership|spam>\",\n  \"budget_signal\": \"<high|medium|low|none>\",\n  \"urgency\": \"<immediate|soon|exploring|none>\",\n  \"business_category\": \"<hotel|spa|airline|gift_shop|resort|other>\",\n  \"estimated_order_value\": \"<high_value|mid_value|low_value|unknown>\",\n  \"summary\": \"<2 sentence summary specific to perfume business>\",\n  \"recommended_action\": \"<specific actionable next step for Luxe Scents sales team>\",\n  \"red_flags\": \"<any concerns or suspicious signals, or 'none'>\"\n}\n"
+            },
+            {
+              "content": "=Name: {{ $json.name }}\nCompany: {{ $json.company }}\nBusiness Type: {{ $json.business_type }}\nCity: {{ $json.city }}\nEmail: {{ $json.email }} (Personal email: {{ $json.is_personal_email }})\nQuantity Needed: {{ $json.quantity_needed }}\nMessage: {{ $json.message }}\n\nQualify this B2B lead for Luxe Scents."
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.1,
+      "position": [
+        -1072,
+        720
+      ],
+      "id": "6a2595fa-8ee4-4338-bf34-b3a549ceaad2",
+      "name": "OpenAI - Qualify Lead",
+      "credentials": {
+        "openAiApi": {
+          "id": "exHtMayJdAnLCJ2M",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const outputData = $input.first().json;\n\n// New n8n OpenAI node format\nconst aiRaw = outputData?.output?.[0]?.content?.[0]?.text\n  || outputData?.message?.content\n  || outputData?.choices?.[0]?.message?.content\n  || '';\n\n// Safely get lead data\nlet leadData = {};\ntry {\n  leadData = $('Validate & Extract Lead Data').first().json;\n} catch(e) {\n  leadData = outputData;\n}\n\nlet qualification;\ntry {\n  const cleaned = aiRaw.replace(/```json/g, '').replace(/```/g, '').trim();\n  qualification = JSON.parse(cleaned);\n} catch(e) {\n  qualification = {\n    score: 0,\n    intent: 'unknown',\n    budget_signal: 'none',\n    urgency: 'none',\n    business_category: 'unknown',\n    estimated_order_value: 'unknown',\n    summary: 'Could not parse AI response.',\n    recommended_action: 'Manual review required',\n    red_flags: 'AI parse failed'\n  };\n}\n\nconst score = parseInt(qualification.score) || 0;\nlet tier;\nif (score >= 7) tier = 'HOT 🔥';\nelse if (score >= 4) tier = 'WARM ⚡';\nelse tier = 'COLD ❄️';\n\nlet priority;\nif (score >= 9) priority = 'CALL TODAY';\nelse if (score >= 7) priority = 'CALL THIS WEEK';\nelse if (score >= 4) priority = 'SEND BROCHURE';\nelse priority = 'ADD TO NEWSLETTER';\n\nreturn [{\n  json: {\n    ...leadData,\n    ...qualification,\n    score,\n    tier,\n    priority,\n    qualified_at: new Date().toISOString()\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -720,
+        720
+      ],
+      "id": "1f75974f-f078-41f6-a799-766a01517c82",
+      "name": "Parse AI Response"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "3cebbfaa-8788-4c7f-99d7-acbd510fd449",
+              "leftValue": "={{ $json.tier }}",
+              "rightValue": "HOT 🔥",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -496,
+        720
+      ],
+      "id": "041acc76-8e45-40b9-865e-7ac2d958ac58",
+      "name": "IF - Hot Lead?"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "6a1e53a4-210f-4228-b01f-22c7bc8e9f89",
+              "leftValue": "={{ $json.tier }}",
+              "rightValue": "WARM ⚡",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -272,
+        816
+      ],
+      "id": "f9292f7c-7d3e-41f8-9fe6-6750a77357ca",
+      "name": "IF - Warm Lead?"
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\n\nconst urgencyEmoji = { \n  immediate: '🔥', \n  soon: '⚡', \n  exploring: '👀', \n  none: '💤' \n};\n\nconst budgetEmoji = { \n  high: '💰💰💰', \n  medium: '💰💰', \n  low: '💰', \n  none: '❓' \n};\n\nconst alertText = `\n🚨 HOT LEAD ALERT — Score: ${d.score}/10\n\n👤 ${d.name} | ${d.company}\n📧 ${d.email} | 📞 ${d.phone}\n\n${urgencyEmoji[d.urgency] || '❓'} Urgency: ${d.urgency}\n${budgetEmoji[d.budget_signal] || '❓'} Budget Signal: ${d.budget_signal}\n🎯 Intent: ${d.intent}\n\n📝 AI Summary:\n${d.summary}\n\n✅ Recommended Action:\n${d.recommended_action}\n\n💬 Original Message:\n\"${d.message}\"\n`.trim();\n\nreturn [{ json: { alertText, ...d } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -272,
+        528
+      ],
+      "id": "384d0e27-1580-4c6a-828b-a24d85b5e6ca",
+      "name": "Format Hot Lead Alert"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1arsNK4ohif38WibmMvnDVcYHc1YIgSF00qZRPmOHs_M",
+          "mode": "list",
+          "cachedResultName": "Luxe Scents - Lead CRM",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1arsNK4ohif38WibmMvnDVcYHc1YIgSF00qZRPmOHs_M/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Hot Leads",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1arsNK4ohif38WibmMvnDVcYHc1YIgSF00qZRPmOHs_M/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Name": "={{ $json.name }}",
+            "Email": "={{ $json.email }}",
+            "Company": "={{ $json.company }}",
+            "Phone": "={{ $json.phone }}",
+            "Score": "={{ $json.score }}",
+            "Recommended Action": "={{ $json.recommended_action }}",
+            "Priority": "={{ $json.priority }}",
+            "Red Flags": "={{ $json.red_flags }}",
+            "Received At": "={{ $json.received_at }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Name",
+              "displayName": "Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Company",
+              "displayName": "Company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Phone",
+              "displayName": "Phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Score",
+              "displayName": "Score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Priority",
+              "displayName": "Priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Recommended Action",
+              "displayName": "Recommended Action",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Red Flags",
+              "displayName": "Red Flags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Received At",
+              "displayName": "Received At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -48,
+        528
+      ],
+      "id": "69c0b7df-9f4f-4cf1-a38e-6b41767e5248",
+      "name": "Hot Leads Sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ntL5XeFjRD3sXEiW",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1arsNK4ohif38WibmMvnDVcYHc1YIgSF00qZRPmOHs_M",
+          "mode": "list",
+          "cachedResultName": "Luxe Scents - Lead CRM",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1arsNK4ohif38WibmMvnDVcYHc1YIgSF00qZRPmOHs_M/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1152064179,
+          "mode": "list",
+          "cachedResultName": "Warm Leads",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1arsNK4ohif38WibmMvnDVcYHc1YIgSF00qZRPmOHs_M/edit#gid=1152064179"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Name": "={{ $json.name }}",
+            "Email": "={{ $json.email }}",
+            "Company": "={{ $json.company }}",
+            "Phone": "={{ $json.phone }}",
+            "Score": "={{ $json.score }}",
+            "Priority": "={{ $json.priority }}",
+            "Recommended Action": "={{ $json.recommended_action }}",
+            "Red Flags": "={{ $json.red_flags }}",
+            "Received At": "={{ $json.received_at }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Name",
+              "displayName": "Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Company",
+              "displayName": "Company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Phone",
+              "displayName": "Phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Score",
+              "displayName": "Score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Priority",
+              "displayName": "Priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Recommended Action",
+              "displayName": "Recommended Action",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Red Flags",
+              "displayName": "Red Flags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Received At",
+              "displayName": "Received At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -48,
+        720
+      ],
+      "id": "31779060-13fc-4479-90ea-c32ccf13502b",
+      "name": "Warm Leads Sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ntL5XeFjRD3sXEiW",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1arsNK4ohif38WibmMvnDVcYHc1YIgSF00qZRPmOHs_M",
+          "mode": "list",
+          "cachedResultName": "Luxe Scents - Lead CRM",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1arsNK4ohif38WibmMvnDVcYHc1YIgSF00qZRPmOHs_M/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 492815291,
+          "mode": "list",
+          "cachedResultName": "Cold Leads",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1arsNK4ohif38WibmMvnDVcYHc1YIgSF00qZRPmOHs_M/edit#gid=492815291"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Name": "={{ $json.name }}",
+            "Email": "={{ $json.email }}",
+            "Company": "={{ $json.company }}",
+            "Phone": "={{ $json.phone }}",
+            "Score": "={{ $json.score }}",
+            "Priority": "={{ $json.priority }}",
+            "Recommended Action": "={{ $json.recommended_action }}",
+            "Red Flags": "={{ $json.red_flags }}",
+            "Received At": "={{ $json.received_at }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Name",
+              "displayName": "Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Company",
+              "displayName": "Company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Phone",
+              "displayName": "Phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Score",
+              "displayName": "Score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Priority",
+              "displayName": "Priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Recommended Action",
+              "displayName": "Recommended Action",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Red Flags",
+              "displayName": "Red Flags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Received At",
+              "displayName": "Received At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -48,
+        912
+      ],
+      "id": "1f30d8ad-1e06-4ecc-8921-c6a5cc18e3f7",
+      "name": "Cold Leads Sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ntL5XeFjRD3sXEiW",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const error = $input.first().json;\n\nconst errorMessage = error.message \n  || error.error \n  || error.description\n  || 'Unknown error occurred';\n\nreturn [{\n  json: {\n    error_message: errorMessage,\n    timestamp: new Date().toISOString(),\n    raw_input: JSON.stringify(error)\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1088,
+        928
+      ],
+      "id": "eeef20b4-128f-4579-a945-343680002fa3",
+      "name": "Error Handler"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\n  \"status\": \"error\",\n  \"message\": \"Something went wrong. Please try again or contact us directly at hello@luxescents.com\"\n}\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        -576,
+        928
+      ],
+      "id": "bc5fda9f-78d9-4902-8349-7a83a023fee0",
+      "name": "Respond - Error"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\n  \"status\": \"success\",\n  \"message\": \"Thank you for your inquiry! Our Luxe Scents team will get back to you shortly.\",\n  \"priority\": \"={{ $json.priority }}\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        176,
+        720
+      ],
+      "id": "7badf446-d3d2-4ff3-9995-d84fd5d82773",
+      "name": "Respond - Success"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1arsNK4ohif38WibmMvnDVcYHc1YIgSF00qZRPmOHs_M",
+          "mode": "list",
+          "cachedResultName": "Luxe Scents - Lead CRM",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1arsNK4ohif38WibmMvnDVcYHc1YIgSF00qZRPmOHs_M/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 268074586,
+          "mode": "list",
+          "cachedResultName": "Error Tabs",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1arsNK4ohif38WibmMvnDVcYHc1YIgSF00qZRPmOHs_M/edit#gid=268074586"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Error Message": "={{ $json.error_message }}",
+            "Timestamp": "={{ $json.timestamp }}",
+            "Raw Input": "={{ $json.raw_input }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Error Message",
+              "displayName": "Error Message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Timestamp",
+              "displayName": "Timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Raw Input",
+              "displayName": "Raw Input",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -848,
+        1136
+      ],
+      "id": "04b936bf-1e00-44e8-aa5d-9f6c8be25cb3",
+      "name": "Append row in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ntL5XeFjRD3sXEiW",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "pinData": {
+    "Webhook": [
+      {
+        "json": {
+          "headers": {
+            "host": "n8n.srv1332323.hstgr.cloud",
+            "user-agent": "PostmanRuntime/7.51.1",
+            "content-length": "437",
+            "accept": "*/*",
+            "accept-encoding": "gzip, deflate, br",
+            "cache-control": "no-cache",
+            "content-type": "application/json",
+            "postman-token": "1db1d80b-7214-446c-933c-cebbc3efc42f",
+            "x-forwarded-for": "54.86.50.139",
+            "x-forwarded-host": "n8n.srv1332323.hstgr.cloud",
+            "x-forwarded-port": "443",
+            "x-forwarded-proto": "https",
+            "x-forwarded-server": "1ee1973d24c0",
+            "x-real-ip": "54.86.50.139"
+          },
+          "params": {},
+          "query": {},
+          "body": {
+            "name": "Priya Sharma",
+            "email": "priya@tajresorts.com",
+            "company": "Taj Resorts & Spas",
+            "phone": "+91-9845012345",
+            "city": "Mumbai",
+            "business_type": "Luxury Hotel Chain",
+            "quantity_needed": "500-800 units per month",
+            "message": "We are procurement team at Taj Resorts managing 18 properties. Looking for premium fragrance partner for lobbies. Budget is ₹15-20 lakhs per quarter. Want to meet this week."
+          },
+          "webhookUrl": "https://n8n.srv1332323.hstgr.cloud/webhook/qualify-lead",
+          "executionMode": "production"
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate & Extract Lead Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Extract Lead Data": {
+      "main": [
+        [
+          {
+            "node": "OpenAI - Qualify Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI - Qualify Lead": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "IF - Hot Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Hot Lead?": {
+      "main": [
+        [
+          {
+            "node": "Format Hot Lead Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF - Warm Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Hot Lead Alert": {
+      "main": [
+        [
+          {
+            "node": "Hot Leads Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Warm Lead?": {
+      "main": [
+        [
+          {
+            "node": "Warm Leads Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Cold Leads Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hot Leads Sheet": {
+      "main": [
+        [
+          {
+            "node": "Respond - Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Warm Leads Sheet": {
+      "main": [
+        [
+          {
+            "node": "Respond - Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cold Leads Sheet": {
+      "main": [
+        [
+          {
+            "node": "Respond - Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Handler": {
+      "main": [
+        [
+          {
+            "node": "Respond - Error",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Append row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "52907b17-dd9c-44e7-8093-2bf732224fdb",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "7496802a0c665ad13a1c0b0ebe20a52bf9915ed85d75854e86738399966ea97e"
+  },
+  "id": "2_Z6oo3Mziy7dr8wd8tz9",
+  "tags": []
+}
